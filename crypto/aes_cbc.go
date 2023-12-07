@@ -4,12 +4,36 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha256"
 	"errors"
+	"golang.org/x/crypto/pbkdf2"
 	"strconv"
 )
 
+const (
+	Pbkdf2KeySize = 48
+)
+
+func Pbkdf2Key(password, salt []byte, iter int) []byte {
+	return pbkdf2.Key(password, salt, iter, Pbkdf2KeySize, sha256.New)
+}
+
+func EncryptCBCPbkdf2Key(plantText, pbkdf2Key []byte) ([]byte, error) {
+	if len(pbkdf2Key) != Pbkdf2KeySize {
+		return nil, errors.New("Crypted Key length error(" + strconv.Itoa(len(pbkdf2Key)) + ")，Crypted Key length should be " + strconv.Itoa(Pbkdf2KeySize))
+	}
+	return EncryptCBC(plantText, pbkdf2Key[:Pbkdf2KeySize-aes.BlockSize], pbkdf2Key[len(pbkdf2Key)-aes.BlockSize:]) //加密
+}
+
+func DecryptCBCPbkdf2Key(plantText, pbkdf2Key []byte) ([]byte, error) {
+	if len(pbkdf2Key) != Pbkdf2KeySize {
+		return nil, errors.New("Crypted Key length error(" + strconv.Itoa(len(pbkdf2Key)) + ")，Crypted Key length should be " + strconv.Itoa(Pbkdf2KeySize))
+	}
+	return DecryptCBC(plantText, pbkdf2Key[:Pbkdf2KeySize-aes.BlockSize], pbkdf2Key[len(pbkdf2Key)-aes.BlockSize:]) //加密
+}
+
 /*
-	加密
+加密
 */
 func EncryptCBC(plantText, key, iv []byte) ([]byte, error) {
 	if len(iv) != aes.BlockSize {
@@ -31,10 +55,10 @@ func EncryptCBC(plantText, key, iv []byte) ([]byte, error) {
 }
 
 /*
-	PKCS #7 填充字符串由一个字节序列组成，每个字节填充该字节序列的长度。
-	下面的示例演示这些模式的工作原理。假定块长度为 8，数据长度为 9，则填充用八位字节数等于 7，数据等于 FF FF FF FF FF FF FF FF FF：
-	数据： FF FF FF FF FF FF FF FF FF
-	PKCS7 填充： FF FF FF FF FF FF FF FF FF 07 07 07 07 07 07 07
+PKCS #7 填充字符串由一个字节序列组成，每个字节填充该字节序列的长度。
+下面的示例演示这些模式的工作原理。假定块长度为 8，数据长度为 9，则填充用八位字节数等于 7，数据等于 FF FF FF FF FF FF FF FF FF：
+数据： FF FF FF FF FF FF FF FF FF
+PKCS7 填充： FF FF FF FF FF FF FF FF FF 07 07 07 07 07 07 07
 */
 func PKCS7Padding(ciphertext []byte, blockSize int) []byte {
 	padding := blockSize - len(ciphertext)%blockSize
@@ -43,7 +67,7 @@ func PKCS7Padding(ciphertext []byte, blockSize int) []byte {
 }
 
 /*
-	解密
+解密
 */
 func DecryptCBC(ciphertext, key, iv []byte) ([]byte, error) {
 	if len(iv) != aes.BlockSize {

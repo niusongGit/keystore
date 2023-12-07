@@ -3,7 +3,6 @@ package keystore
 import (
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"gitee.com/prestonTao/keystore/base58"
 	"gitee.com/prestonTao/keystore/crypto"
@@ -16,14 +15,14 @@ import (
 )
 
 func TestApi(t *testing.T) {
-	//useKeyStore()
+	useKeyStore()
 	//getNetAddrTmp()
 	//createNewAddrByName()
 	//createNewAddr()
 	//getAddrList()
 	//updatePwd()
 	//updateAddrPwd()
-	example1()
+	//example1()
 	// leftRecentTest()
 	//getPukByAddr()
 	//findAddress()
@@ -40,11 +39,11 @@ func TestApi(t *testing.T) {
 	//fmt.Println("err::::::", err)
 }
 
-func useKeyStore() {
+func TestApiV5(t *testing.T) {
 	path := "keystore.key"
 	addrPre := "IM"
 	pwd := "1234567890"
-	newAddrPwd := "12345678901"
+	//newAddrPwd := "1234567890"
 	err := Load(path, addrPre)
 	if err != nil {
 		err := CreateKeystore(path, addrPre, pwd)
@@ -53,11 +52,22 @@ func useKeyStore() {
 			return
 		}
 	}
-	//words := "risk alcohol smooth predict image index love alert planet piano advice spring"
-	//err = ImportMnemonicCreateMoreCoinAddr(words, pwd, newAddrPwd, newAddrPwd, 14)
-	//if err != nil {
-	//	fmt.Println(err)
-	//}
+
+}
+
+func useKeyStore() {
+	path := "keystore.key"
+	addrPre := "IM"
+	pwd := "1234567890"
+	newAddrPwd := "1234567890"
+	err := Load(path, addrPre)
+	if err != nil {
+		err := keystoreStatic.CreateNewKeystore(pwd)
+		if err != nil {
+			fmt.Println("CreateKeystore error:", err.Error())
+			return
+		}
+	}
 
 	if keystoreStatic.NetAddr == nil {
 		_, _, err = keystoreStatic.CreateNetAddr(pwd, newAddrPwd)
@@ -85,16 +95,22 @@ func useKeyStore() {
 		fmt.Println("DH:", dh)
 	}
 
+	//prk, puk, err := GetNetAddr(newAddrPwd)
+	//fmt.Printf("GetNetAddr prk: %v  puk: %v err:%v \n", base64.StdEncoding.EncodeToString(prk), base64.StdEncoding.EncodeToString(puk), err)
+	//addrPwd, err := keystoreStatic.GetNetAddrPwd(prk)
+	//fmt.Println("NetAddrPwd: ", addrPwd, "err :", err)
 	//ok, err := keystoreStatic.UpdateDHKeyPwd(newAddrPwd, "987654321")
 	//fmt.Println("ok ", ok, " err:", err)
-	//ok, err := keystoreStatic.UpdateDHKeyPwd("987654321", newAddrPwd)
+	//ok, err = keystoreStatic.UpdateDHKeyPwd("987654321", newAddrPwd)
 	//fmt.Println("ok ", ok, " err:", err)
-
-	//ok, err := UpdateNetAddrPwd(newAddrPwd, "1234567890")
+	//
+	//ok, err = UpdateNetAddrPwd(newAddrPwd, "12345678901")
 	//fmt.Println("UpdateNetAddrPwd ok ", ok, " err:", err)
-	//prk, puk, err := GetNetAddr("1234567890")
+	//prk, puk, err = GetNetAddr("12345678901")
 	//fmt.Printf("GetNetAddr prk: %v  puk: %v err:%v \n", base64.StdEncoding.EncodeToString(prk), base64.StdEncoding.EncodeToString(puk), err)
-	//fmt.Println("NetAddr:", BuildAddr(puk))
+	////fmt.Println("NetAddr:", BuildAddr(puk))
+	//addrPwd, err = keystoreStatic.GetNetAddrPwd(prk)
+	//fmt.Println("NetAddrPwd: ", addrPwd, "err :", err)
 
 }
 
@@ -175,9 +191,9 @@ func createNewAddr() {
 
 func updatePwd() {
 	path := "keystore.key"
-	addrPre := "TEST"
-	pwd := "1234"
-	newPwd := "123"
+	addrPre := "IM"
+	pwd := "12345678903"
+	newPwd := "1234567890"
 	err := Load(path, addrPre)
 	if err != nil {
 		fmt.Println(err)
@@ -210,8 +226,8 @@ func updateAddrPwd() {
 func example1() {
 	path := "keystore.key"
 	addrPre := "IM"
-	//pwd := "0000000000"
-	//newAddrpwd := "12345678901"
+	//pwd := "1234567890"
+	newAddrpwd := "1234567890"
 	/*err := CreateKeystore(path, addrPre, pwd)
 	if err != nil {
 		fmt.Println(err)
@@ -252,8 +268,8 @@ func example1() {
 	}
 	addr := addrInfos[0].Addr
 	newAddrpwd1 := "12345678901"
-	//ok, err := UpdateAddrPwd(addr.B58String(), newAddrpwd, newAddrpwd1)
-	//fmt.Println(ok, err)
+	ok, err := UpdateAddrPwd(addr.B58String(), newAddrpwd, newAddrpwd1)
+	fmt.Println(ok, err)
 
 	//addr, err = GetNewAddr(pwd, newAddrpwd1)
 	//if err != nil {
@@ -284,7 +300,8 @@ func example1() {
 	//	fmt.Println("遍历地址:", one.Addr.B58String())
 	//}
 	//	puk := addrInfos[1].Puk
-	puk, _ := GetPukByAddr(addr)
+	puk, _ := GetPukByAddr(addr, newAddrpwd1)
+	fmt.Println("获取到的puk:", base64.StdEncoding.EncodeToString(puk))
 	//_, prk, err := GetKeyByPuk(puk, newAddrpwd1)
 	_, prk, puk, err := GetKeyByAddr(addr, newAddrpwd1)
 	//fmt.Println(base64.StdEncoding.EncodeToString(prk))
@@ -303,20 +320,20 @@ func example1() {
 
 }
 
-func getPukByAddr() {
-	path := "keystore.key"
-	addrPre := "TEST"
-	Load(path, addrPre)
-	addrInfos := GetAddrAll()
-	for _, one := range addrInfos {
-		puk, ok := GetPukByAddr(one.Addr)
-		if !ok {
-			fmt.Println(ok)
-		}
-		fmt.Println("地址:", one.Addr.B58String(), " 公钥：", hex.EncodeToString(puk))
-	}
-
-}
+//func getPukByAddr() {
+//	path := "keystore.key"
+//	addrPre := "TEST"
+//	Load(path, addrPre)
+//	addrInfos := GetAddrAll()
+//	for _, one := range addrInfos {
+//		puk, ok := GetPukByAddr(one.Addr)
+//		if !ok {
+//			fmt.Println(ok)
+//		}
+//		fmt.Println("地址:", one.Addr.B58String(), " 公钥：", hex.EncodeToString(puk))
+//	}
+//
+//}
 
 func findAddress() {
 	path := "keystore.key"
@@ -326,49 +343,49 @@ func findAddress() {
 	fmt.Println(ok, "地址:", ainfo.Addr.B58String())
 }
 
-func getCoinbase() {
-	path := "keystore.key"
-	addrPre := "TEST"
-	Load(path, addrPre)
-	addrInfos := GetAddrAll()
-	for _, one := range addrInfos {
-		puk, ok := GetPukByAddr(one.Addr)
-		if !ok {
-			fmt.Println(ok)
-		}
-		fmt.Println("地址:", one.Addr.B58String(), " 公钥：", hex.EncodeToString(puk))
-	}
-	fmt.Println("基础地址:", GetCoinbase().Addr.B58String())
-	SetCoinbase(2)
-	fmt.Println("修改后基础地址:", GetCoinbase().Addr.B58String())
-}
+//func getCoinbase() {
+//	path := "keystore.key"
+//	addrPre := "TEST"
+//	Load(path, addrPre)
+//	addrInfos := GetAddrAll()
+//	for _, one := range addrInfos {
+//		puk, ok := GetPukByAddr(one.Addr)
+//		if !ok {
+//			fmt.Println(ok)
+//		}
+//		fmt.Println("地址:", one.Addr.B58String(), " 公钥：", hex.EncodeToString(puk))
+//	}
+//	fmt.Println("基础地址:", GetCoinbase().Addr.B58String())
+//	SetCoinbase(2)
+//	fmt.Println("修改后基础地址:", GetCoinbase().Addr.B58String())
+//}
 
 func mnemonicExample() {
 	path := "keystore.key"
 	addrPre := "IM"
 	pwd := "1234567890"
-	//newAddrPwd := "1234567890"
+	newAddrPwd := "1234567890"
 	Load(path, addrPre)
-	words, err := ExportMnemonic(pwd)
-	if err != nil {
-		fmt.Println(err)
-	}
-	fmt.Println(words)
-
-	//words := "donor hotel girl cigar fish crater pride point attract bid want receive"
-	////err := ImportMnemonic(words, pwd, newAddrPwd, newAddrPwd)
-	////if err != nil {
-	////	fmt.Println(err)
-	////}
-	//err := ImportMnemonicCreateMoreCoinAddr(words, pwd, newAddrPwd, newAddrPwd, 2)
-	//if err != nil {
-	//	fmt.Println(err)
-	//}
-	//words, err = ExportMnemonic(pwd)
+	//words, err := ExportMnemonic(pwd)
 	//if err != nil {
 	//	fmt.Println(err)
 	//}
 	//fmt.Println(words)
+
+	words := "hour street again define million camera clean violin tunnel cattle flee daughter"
+	err := ImportMnemonic(words, pwd, newAddrPwd, newAddrPwd)
+	if err != nil {
+		fmt.Println(err)
+	}
+	//err := ImportMnemonicCreateMoreCoinAddr(words, pwd, newAddrPwd, newAddrPwd, 2)
+	//if err != nil {
+	//	fmt.Println(err)
+	//}
+	words, err = ExportMnemonic(pwd)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println(words)
 }
 
 func dhKeyPar() {

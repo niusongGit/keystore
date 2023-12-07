@@ -40,9 +40,11 @@ func NewKeyManager(mnemonic string, passphrase string) (*KeyManager, error) {
 	return km, nil
 }
 
-//GeneratePrivate 根据原始seed推导私钥 123  1234
-func GeneratePrivate(Seeds []byte, pwd []byte, Salt []byte, MnemonicLang []string) (*KeyManager, error) {
-	newSeed, err := crypto.DecryptCBC(Seeds, pwd[:], Salt) //通过keystore的加密后的seed解出原始的seed
+// GeneratePrivate 根据原始seed推导私钥 123  1234
+func GeneratePrivate(Seeds []byte, pbkdf2Key []byte, MnemonicLang []string) (*KeyManager, error) {
+
+	newSeed, err := crypto.DecryptCBCPbkdf2Key(Seeds, pbkdf2Key) //通过keystore的加密后的seed解出原始的seed
+
 	bip39.SetWordList(MnemonicLang)
 	//fmt.Println("导入seed", newSeed)
 	Mnemonic, _ := bip39.NewMnemonic(newSeed) //通过原生的seed推出助记词
@@ -51,7 +53,7 @@ func GeneratePrivate(Seeds []byte, pwd []byte, Salt []byte, MnemonicLang []strin
 	return km, err
 }
 
-//CreateAddr 通过助记词推导出私钥，再通过私钥生成地址
+// CreateAddr 通过助记词推导出私钥，再通过私钥生成地址
 func (k *BipKey) CreateAddr(AddrPre string) (crypto.AddressCoin, ed25519.PublicKey, ed25519.PrivateKey) {
 	privk := ed25519.NewKeyFromSeed(k.Bip32Key.Key) //私钥
 	pub := privk.Public().(ed25519.PublicKey)
@@ -60,7 +62,7 @@ func (k *BipKey) CreateAddr(AddrPre string) (crypto.AddressCoin, ed25519.PublicK
 
 }
 
-//GetKey  KeyManager 兼容一下批量创建的时候
+// GetKey  KeyManager 兼容一下批量创建的时候
 func (km *KeyManager) GetKey(purpose, coinType, account, change, index uint32) (*BipKey, error) {
 
 	path := fmt.Sprintf(`m/%d'/%d'/%d'/%d/%d`, purpose-Apostrophe, coinType-Apostrophe, account, change, index)
@@ -85,7 +87,7 @@ func (km *KeyManager) GetKey(purpose, coinType, account, change, index uint32) (
 	return &BipKey{path: path, Bip32Key: key}, nil
 }
 
-//GetChangeKey 获取指定路径的bip32.key
+// GetChangeKey 获取指定路径的bip32.key
 func (km *KeyManager) GetChangeKey(purpose, coinType, account, change uint32) (*bip32.Key, error) {
 	path := fmt.Sprintf(`m/%d'/%d'/%d'/%d`, purpose-Apostrophe, coinType-Apostrophe, account, change)
 
@@ -109,7 +111,7 @@ func (km *KeyManager) GetChangeKey(purpose, coinType, account, change uint32) (*
 	return key, nil
 }
 
-//GetAccountKey 根据account获取key
+// GetAccountKey 根据account获取key
 func (km *KeyManager) GetAccountKey(purpose, coinType, account uint32) (*bip32.Key, error) {
 	path := fmt.Sprintf(`m/%d'/%d'/%d'`, purpose-Apostrophe, coinType-Apostrophe, account)
 
@@ -133,7 +135,7 @@ func (km *KeyManager) GetAccountKey(purpose, coinType, account uint32) (*bip32.K
 	return key, nil
 }
 
-//GetCoinTypeKey 根据不同币种获取key
+// GetCoinTypeKey 根据不同币种获取key
 func (km *KeyManager) GetCoinTypeKey(purpose, coinType uint32) (*bip32.Key, error) {
 	path := fmt.Sprintf(`m/%d'/%d'`, purpose-Apostrophe, coinType-Apostrophe)
 
@@ -157,7 +159,7 @@ func (km *KeyManager) GetCoinTypeKey(purpose, coinType uint32) (*bip32.Key, erro
 	return key, nil
 }
 
-//GetPurposeKey 根据协议获取key
+// GetPurposeKey 根据协议获取key
 func (km *KeyManager) GetPurposeKey(purpose uint32) (*bip32.Key, error) {
 	path := fmt.Sprintf(`m/%d'`, purpose-Apostrophe)
 
@@ -181,7 +183,7 @@ func (km *KeyManager) GetPurposeKey(purpose uint32) (*bip32.Key, error) {
 	return key, nil
 }
 
-//GetMasterKey 找根key
+// GetMasterKey 找根key
 func (km *KeyManager) GetMasterKey() (*bip32.Key, error) {
 	path := "m"
 	key, ok := km.getKey(path)
@@ -196,12 +198,12 @@ func (km *KeyManager) GetMasterKey() (*bip32.Key, error) {
 	return key, nil
 }
 
-//GetSeed 获取助记词的seed
+// GetSeed 获取助记词的seed
 func (km *KeyManager) GetSeed() []byte {
 	return bip39.NewSeed(km.GetMnemonic(), km.GetPassphrase())
 }
 
-//找根私钥 返构造bip32.key
+// 找根私钥 返构造bip32.key
 func (km *KeyManager) getKey(path string) (*bip32.Key, bool) {
 	km.mux.Lock()
 	defer km.mux.Unlock()
@@ -209,17 +211,17 @@ func (km *KeyManager) getKey(path string) (*bip32.Key, bool) {
 	return key, ok
 }
 
-//GetMnemonic 构造助记词返回
+// GetMnemonic 构造助记词返回
 func (km *KeyManager) GetMnemonic() string {
 	return km.mnemonic
 }
 
-//GetPassphrase 构造助记词密码返回
+// GetPassphrase 构造助记词密码返回
 func (km *KeyManager) GetPassphrase() string {
 	return km.passphrase
 }
 
-//构造对应路径的key
+// 构造对应路径的key
 func (km *KeyManager) setKey(path string, key *bip32.Key) {
 	km.mux.Lock()
 	defer km.mux.Unlock()

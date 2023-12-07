@@ -3,11 +3,13 @@ package keystore
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"gitee.com/prestonTao/keystore/derivation"
 	"io/ioutil"
 	"sync"
+	"time"
 
 	"gitee.com/prestonTao/keystore/crypto"
 	"gitee.com/prestonTao/keystore/crypto/dh"
@@ -33,7 +35,7 @@ type KeystoreInterface interface {
 	GetNewAddr(password, newAddressPassword string) (crypto.AddressCoin, error)
 	GetKeyByAddr(addr crypto.AddressCoin, password string) (rand []byte, prk ed25519.PrivateKey, puk ed25519.PublicKey, err error)
 	GetKeyByPuk(puk []byte, password string) (rand []byte, prk ed25519.PrivateKey, err error)
-	GetPukByAddr(addr crypto.AddressCoin) (puk ed25519.PublicKey, ok bool)
+	GetPukByAddr(addr crypto.AddressCoin, password string) (puk ed25519.PublicKey, ok bool)
 	FindPuk(puk []byte) (addrInfo AddressInfo, ok bool)
 	UpdatePwd(oldpwd, newpwd string) (ok bool, err error)
 	UpdateAddrPwd(addr, oldpwd, newpwd string) (ok bool, err error)
@@ -43,28 +45,31 @@ type KeystoreInterface interface {
 }
 
 type Keystore struct {
-	filepath      string             //keystore文件存放路径
-	AddrPre       string             `json:"-"`        //
-	Coinbase      uint64             `json:"coinbase"` //当前默认使用的收付款地址
-	DHIndex       uint64             `json:"dhindex"`  //DH密钥，指向钱包位置
-	lock          *sync.RWMutex      `json:"-"`        //
-	MnemonicLang  []string           `json:"-"`
-	Seed          []byte             `json:"seed"`      //种子
-	CheckHash     []byte             `json:"checkhash"` //主私钥和链编码加密验证hash值
-	Addrs         []*AddressInfo     `json:"addrs"`     //已经生成的地址列表
-	DHKey         []DHKeyPair        `json:"dhkey"`     //DH密钥
-	NetAddr       *NetAddrInfo       `json:"netaddr"`
-	addrMap       *sync.Map          `json:"-"` //key:string=收款地址;value:*AddressInfo=地址密钥等信息;
-	pukMap        *sync.Map          `json:"-"` //key:string=公钥;value:*AddressInfo=地址密钥等信息;
+	filepath     string         //keystore文件存放路径
+	AddrPre      string         `json:"-"`        //
+	Coinbase     uint64         `json:"coinbase"` //当前默认使用的收付款地址
+	DHIndex      uint64         `json:"dhindex"`  //DH密钥，指向钱包位置
+	lock         *sync.RWMutex  `json:"-"`        //
+	MnemonicLang []string       `json:"-"`
+	Seed         []byte         `json:"seed"`      //种子
+	CheckHash    []byte         `json:"checkhash"` //主私钥和链编码加密验证hash值
+	Addrs        []*AddressInfo `json:"addrs"`     //已经生成的地址列表
+	DHKey        []DHKeyPair    `json:"dhkey"`     //DH密钥
+	NetAddr      *NetAddrInfo   `json:"netaddr"`
+	addrMap      *sync.Map      `json:"-"` //key:string=收款地址;value:*AddressInfo=地址密钥等信息;
+	//pukMap        *sync.Map          `json:"-"` //key:string=公钥;value:*AddressInfo=地址密钥等信息;
 	netAddrPrkTmp ed25519.PrivateKey `json:"-"` //网络地址私钥
+
+	Salt    []byte `json:"salt"`    //随机盐
+	Rounds  int    `json:"rounds"`  //pbkdf2.Key方法的iteration
+	Version int    `json:"version"` //KeyStore版本
 }
 
 // 网络地址信息
 type NetAddrInfo struct {
-	Puk       ed25519.PublicKey `json:"puk"`       //公钥
-	SubKey    []byte            `json:"subKey"`    //子密钥
-	CheckHash []byte            `json:"checkhash"` //加密验证hash值
-	Prkpwd    []byte            `json:"prkpwd"`    //私钥加密密码
+	SubKey    []byte `json:"subKey"`    //子密钥
+	CheckHash []byte `json:"checkhash"` //加密验证hash值
+	Prkpwd    []byte `json:"prkpwd"`    //私钥加密密码
 }
 
 func NewKeystore(filepath, addrPre string) *Keystore {
@@ -78,10 +83,10 @@ func NewKeystore(filepath, addrPre string) *Keystore {
 }
 
 /*
-	NewKeyStoreTmpNetAddr
-	@Description: 根据NetAddr私钥获取一个Keystore
-	@param prk
-	@return *Keystore
+NewKeyStoreTmpNetAddr
+@Description: 根据NetAddr私钥获取一个Keystore
+@param prk
+@return *Keystore
 */
 func NewKeyStoreTmpNetAddr(prk []byte) *Keystore {
 	return &Keystore{
@@ -90,12 +95,12 @@ func NewKeyStoreTmpNetAddr(prk []byte) *Keystore {
 }
 
 /*
-	SetKeyStore
-	@Description: 根据keystore文件设置Keystore对象
-	@receiver this
-	@param filepath 文件路径
-	@param addrPre 地址前缀
-	@return error
+SetKeyStore
+@Description: 根据keystore文件设置Keystore对象
+@receiver this
+@param filepath 文件路径
+@param addrPre 地址前缀
+@return error
 */
 func (this *Keystore) SetKeyStore(filepath, addrPre string) error {
 	this.filepath = filepath
@@ -134,10 +139,17 @@ func (this *Keystore) Load() error {
 	}
 	this.lock = new(sync.RWMutex)
 	this.addrMap = new(sync.Map)
-	this.pukMap = new(sync.Map)
+	//this.pukMap = new(sync.Map)
 	if !this.CheckIntact() {
 
 		return errors.New("Damaged wallet file: Wallet incomplete")
+	}
+
+	if this.Version != version_5 { //标识为旧版
+		this.Addrs = nil
+		this.DHKey = nil
+		this.NetAddr = nil
+		return errors.New("Not the latest version 5")
 	}
 	// if walletOne.Seed != nil && len(walletOne.Seed) > 0 {
 	// 	walletOne.IV = salt
@@ -148,24 +160,24 @@ func (this *Keystore) Load() error {
 		// addrStr := one.Addr.B58String()
 		// addrInfo.AddrStr = addrStr
 		//存在不是pib44协议地址时直接返回重新创建地址
-		if addrInfo.Version != version_4 {
-			this.Addrs = nil
-			this.DHKey = nil
-			return nil
-		}
+		//if addrInfo.Version != version_4 {
+		//	this.Addrs = nil
+		//	this.DHKey = nil
+		//	return nil
+		//}
 
 		this.addrMap.Store(utils.Bytes2string(one.Addr), addrInfo)
-		this.pukMap.Store(utils.Bytes2string(one.Puk), addrInfo)
+		//this.pukMap.Store(utils.Bytes2string(one.Puk), addrInfo)
 	}
 
 	return nil
 }
 
 /*
-	oldKeystoreLoad
-	@Description: 旧版地址解析到新版地址并保存
-	@receiver this
-	@return error
+oldKeystoreLoad
+@Description: 旧版地址解析到新版地址并保存
+@receiver this
+@return error
 */
 func (this *Keystore) oldKeystoreLoad(bs []byte) error {
 
@@ -191,7 +203,7 @@ func (this *Keystore) oldKeystoreLoad(bs []byte) error {
 	//this.DHKey = make([]DHKeyPair, 0)
 	this.lock = new(sync.RWMutex)
 	this.addrMap = new(sync.Map)
-	this.pukMap = new(sync.Map)
+	//this.pukMap = new(sync.Map)
 	if !this.CheckIntact() {
 		//钱包文件损坏:第" + strconv.Itoa(i+1) + "个钱包不完整
 		return errors.New("Damaged wallet file: Wallet incomplete")
@@ -229,6 +241,17 @@ func (this *Keystore) CheckIntact() bool {
 		return false
 	}
 
+	if this.Version == version_5 {
+		if this.Salt == nil || len(this.Salt) != 32 {
+			return false
+		}
+
+		if this.Rounds < 25000 {
+			return false
+		}
+
+	}
+
 	return true
 }
 
@@ -254,22 +277,61 @@ func (this *Keystore) Save() error {
 func (this *Keystore) CreateNewKeystore(password string) error {
 	pwd := sha256.Sum256([]byte(password))
 
-	seed, err := crypto.Rand16Byte() //随机生成16byte
+	var seedBs []byte
+	if this.Version != version_5 && this.Seed != nil && len(this.Seed) > 0 { //升级
+		//用旧版解密方式解密种子
+		seed, err := crypto.DecryptCBC(this.Seed, pwd[:], Salt)
+		if err != nil {
+			return err
+		}
+		//判断密码是否正确
+		chackHash := sha256.Sum256(seed)
+		if !bytes.Equal(chackHash[:], this.CheckHash) {
+			return ERROR_wallet_password_fail
+		}
+		seedBs = seed
+	} else {
+		seed, err := crypto.Rand16Byte() //随机生成16byte
+		if err != nil {
+			return err
+		}
+		seedBs = seed[:]
+	}
+
+	err := this.NewWallet(&seedBs, &pwd)
 	if err != nil {
 		return err
 	}
-	seedBs := seed[:]
-	err = this.NewWallet(&seedBs, &pwd)
-	if err != nil {
-		return err
-	}
-	//this.Version = version_3
+
 	return nil
 }
 
 func (this *Keystore) NewWallet(seed *[]byte, pwd *[32]byte) error {
+	//生成
+	var privPassphraseSalt [32]byte
 
-	seedSec, err := crypto.EncryptCBC(*seed, (*pwd)[:], Salt) //加密
+	_, err := rand.Read(privPassphraseSalt[:])
+	if err != nil {
+		return err
+	}
+	this.Salt = privPassphraseSalt[:]
+
+	nStartTime := time.Now().UnixMilli()
+	this.Rounds = 25000
+	crypto.Pbkdf2Key(pwd[:], this.Salt, this.Rounds)
+	this.Rounds = int(2500000 / (time.Now().UnixMilli() - nStartTime))
+
+	nStartTime = time.Now().UnixMilli()
+	crypto.Pbkdf2Key(pwd[:], this.Salt, this.Rounds)
+
+	this.Rounds = (this.Rounds + int(int64(this.Rounds*100)/(time.Now().UnixMilli()-nStartTime))) / 2
+	if this.Rounds < 25000 {
+		this.Rounds = 25000
+	}
+
+	pbkdf2Key := crypto.Pbkdf2Key(pwd[:], this.Salt, this.Rounds)
+
+	seedSec, err := crypto.EncryptCBCPbkdf2Key(*seed, pbkdf2Key) //加密
 	if err != nil {
 		return err
 	}
@@ -281,11 +343,13 @@ func (this *Keystore) NewWallet(seed *[]byte, pwd *[32]byte) error {
 
 	this.Addrs = make([]*AddressInfo, 0)
 	this.Coinbase = 0
+	this.DHIndex = 2
 	this.DHKey = make([]DHKeyPair, 0)
 	this.lock = new(sync.RWMutex)
 	this.addrMap = new(sync.Map)
-	this.pukMap = new(sync.Map)
+	//this.pukMap = new(sync.Map)
 	this.NetAddr = nil
+	this.Version = version_5
 
 	return nil
 }
@@ -343,19 +407,20 @@ func (this *Keystore) GetAddr() (addrs []*AddressInfo) {
 }
 
 /*
-	GetNetAddrPwd
-	@Description: 获取密码
-	@receiver this
-	@param prk
-	@return string
-	@return error
+GetNetAddrPwd
+@Description: 获取密码
+@receiver this
+@param prk
+@return string
+@return error
 */
 func (this *Keystore) GetNetAddrPwd(prk []byte) (string, error) {
 	if prk == nil || len(prk) == 0 {
 		return "", errors.New("prk is empty")
 	}
 	pr := ed25519.PrivateKey(prk).Seed()
-	p, err := crypto.DecryptCBC(this.NetAddr.Prkpwd, pr, Salt)
+	pbkdf2KeyPrk := crypto.Pbkdf2Key(pr, this.Salt, this.Rounds)
+	p, err := crypto.DecryptCBCPbkdf2Key(this.NetAddr.Prkpwd, pbkdf2KeyPrk)
 	if err != nil {
 		return "", errors.New("prk is fail")
 	}
@@ -364,13 +429,13 @@ func (this *Keystore) GetNetAddrPwd(prk []byte) (string, error) {
 }
 
 /*
-	GetNetAddr
-	@Description: 获取网络地址
-	@receiver this
-	@param password 网络地址的密码
-	@return prk 地址私钥
-	@return puk 地址公钥
-	@return err
+GetNetAddr
+@Description: 获取网络地址
+@receiver this
+@param password 网络地址的密码
+@return prk 地址私钥
+@return puk 地址公钥
+@return err
 */
 func (this *Keystore) GetNetAddr(password string) (prk ed25519.PrivateKey, puk ed25519.PublicKey, err error) {
 	//当密码为空时并且已经设置了Netaddr的私钥时直接通过私钥获取对应的公钥
@@ -380,8 +445,9 @@ func (this *Keystore) GetNetAddr(password string) (prk ed25519.PrivateKey, puk e
 
 	pwd := sha256.Sum256([]byte(password)) //网络地址的密码
 
+	pbkdf2Key := crypto.Pbkdf2Key(pwd[:], this.Salt, this.Rounds)
 	//先用密码解密种子
-	subKeyBs, err := crypto.DecryptCBC(this.NetAddr.SubKey, pwd[:], Salt)
+	subKeyBs, err := crypto.DecryptCBCPbkdf2Key(this.NetAddr.SubKey, pbkdf2Key)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -405,10 +471,14 @@ func (this *Keystore) GetNetAddr(password string) (prk ed25519.PrivateKey, puk e
 	if this.NetAddr.Prkpwd == nil || len(this.NetAddr.Prkpwd) == 0 {
 		this.lock.Lock()
 		defer this.lock.Unlock()
-		this.NetAddr.Prkpwd, err = crypto.EncryptCBC([]byte(password), prk.Seed(), Salt)
+
+		//私钥加密密码
+		pbkdf2KeyPrk := crypto.Pbkdf2Key(prk.Seed(), this.Salt, this.Rounds)
+		this.NetAddr.Prkpwd, err = crypto.EncryptCBCPbkdf2Key([]byte(password), pbkdf2KeyPrk)
 		if err != nil {
 			return nil, nil, err
 		}
+
 		err = this.Save()
 		if err != nil {
 			return nil, nil, err
@@ -419,14 +489,14 @@ func (this *Keystore) GetNetAddr(password string) (prk ed25519.PrivateKey, puk e
 }
 
 /*
-	CreateNetAddr
-	@Description: 新建网络地址
-	@receiver this
-	@param password 钱包的密码
-	@param netAddressPassword 网络地址的密码
-	@return prk 地址私钥
-	@return puk 地址公钥
-	@return err
+CreateNetAddr
+@Description: 新建网络地址
+@receiver this
+@param password 钱包的密码
+@param netAddressPassword 网络地址的密码
+@return prk 地址私钥
+@return puk 地址公钥
+@return err
 */
 func (this *Keystore) CreateNetAddr(password, netAddressPassword string) (prk ed25519.PrivateKey, puk ed25519.PublicKey, err error) {
 	pwd := sha256.Sum256([]byte(password))                        //钱包的密码
@@ -436,7 +506,7 @@ func (this *Keystore) CreateNetAddr(password, netAddressPassword string) (prk ed
 	defer this.lock.Unlock()
 
 	//验证钱包密码是否正确
-	_, keyRoot, codeRoot, err := this.Decrypt(pwd)
+	_, keyRoot, codeRoot, _, err := this.Decrypt(pwd)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -451,9 +521,10 @@ func (this *Keystore) CreateNetAddr(password, netAddressPassword string) (prk ed
 	//生成子地址checkHash
 	checkHash := sha256.Sum256(*keyNew)
 
+	pbkdf2Key := crypto.Pbkdf2Key(netAddrPasswordB[:], this.Salt, this.Rounds)
 	//子秘钥
 	var subKeySec []byte
-	subKeySec, err = crypto.EncryptCBC(*keyNew, netAddrPasswordB[:], Salt) //对子地址加密码
+	subKeySec, err = crypto.EncryptCBCPbkdf2Key(*keyNew, pbkdf2Key) //对子地址加密码
 	if err != nil {
 		return nil, nil, err
 	}
@@ -464,12 +535,14 @@ func (this *Keystore) CreateNetAddr(password, netAddressPassword string) (prk ed
 		return nil, nil, err
 	}
 
-	prkPwd, err := crypto.EncryptCBC([]byte(netAddressPassword), prk.Seed(), Salt)
+	//私钥加密密码
+	pbkdf2KeyPrk := crypto.Pbkdf2Key(prk.Seed(), this.Salt, this.Rounds)
+	prkPwd, err := crypto.EncryptCBCPbkdf2Key([]byte(netAddressPassword), pbkdf2KeyPrk)
 	if err != nil {
 		return nil, nil, err
 	}
+
 	this.NetAddr = &NetAddrInfo{
-		Puk:       puk,
 		SubKey:    subKeySec,
 		CheckHash: checkHash[:],
 		Prkpwd:    prkPwd,
@@ -494,13 +567,13 @@ func (this *Keystore) GetDHKeyPair() DHKeyPair {
 }
 
 /*
-	GetNewDHKey
-	@Description: 创建DHKey协商秘钥
-	@receiver this
-	@param password 钱包密码
-	@param newDHKeyPassword DHKey密码
-	@return *dh.KeyPair
-	@return error
+GetNewDHKey
+@Description: 创建DHKey协商秘钥
+@receiver this
+@param password 钱包密码
+@param newDHKeyPassword DHKey密码
+@return *dh.KeyPair
+@return error
 */
 func (this *Keystore) GetNewDHKey(password string, newDHKeyPassword string) (*dh.KeyPair, error) {
 	pwd := sha256.Sum256([]byte(password))
@@ -508,7 +581,7 @@ func (this *Keystore) GetNewDHKey(password string, newDHKeyPassword string) (*dh
 	this.lock.Lock()
 	defer this.lock.Unlock()
 
-	_, key, code, err := this.Decrypt(pwd)
+	_, key, code, _, err := this.Decrypt(pwd)
 	if err != nil {
 		return nil, err
 	}
@@ -547,9 +620,10 @@ func (this *Keystore) GetNewDHKey(password string, newDHKeyPassword string) (*dh
 	//生成子地址checkHash
 	checkHash := sha256.Sum256(key)
 
+	pbkdf2Key := crypto.Pbkdf2Key(newDHKeyPasswordB[:], this.Salt, this.Rounds)
 	//子秘钥
 	var subKeySec []byte
-	subKeySec, err = crypto.EncryptCBC(key, newDHKeyPasswordB[:], Salt)
+	subKeySec, err = crypto.EncryptCBCPbkdf2Key(key, pbkdf2Key)
 	if err != nil {
 		return nil, err
 	}
@@ -595,13 +669,13 @@ func (this *Keystore) FindAddress(addr crypto.AddressCoin) (addrInfo AddressInfo
 }
 
 /*
-	GetNewAddr
-	@Description: 获取一个新的地址
-	@receiver this
-	@param password 钱包密码
-	@param newAddressPassword 新地址密码
-	@return crypto.AddressCoin
-	@return error
+GetNewAddr
+@Description: 获取一个新的地址
+@receiver this
+@param password 钱包密码
+@param newAddressPassword 新地址密码
+@return crypto.AddressCoin
+@return error
 */
 func (this *Keystore) GetNewAddr(password, newAddressPassword string) (crypto.AddressCoin, error) {
 	pwd := sha256.Sum256([]byte(password))                           //钱包的密码
@@ -611,7 +685,7 @@ func (this *Keystore) GetNewAddr(password, newAddressPassword string) (crypto.Ad
 	defer this.lock.Unlock()
 
 	//验证钱包密码是否正确
-	_, _, _, err := this.Decrypt(pwd)
+	_, _, _, pbkdf2Key, err := this.Decrypt(pwd)
 	if err != nil {
 		return nil, err
 	}
@@ -667,25 +741,31 @@ func (this *Keystore) GetNewAddr(password, newAddressPassword string) (crypto.Ad
 	//老版本end=====
 
 	//通过bip44推导出公钥.
-	km, _ := derivation.GeneratePrivate(this.Seed, pwd[:], Salt, this.MnemonicLang)
+	km, _ := derivation.GeneratePrivate(this.Seed, pbkdf2Key, this.MnemonicLang)
 	key, _ := km.GetKey(derivation.PurposeBIP44, derivation.CoinType, 0, 0, uint32(index)) //通过原生助记词推出私钥
 	//根据私钥推导公钥生成地址.
 	addr, puk, priks := key.CreateAddr(this.AddrPre)
 	checkHash := sha256.Sum256(priks)
-	subKeySec, err := crypto.EncryptCBC(priks, newAddressPasswordB[:], Salt) //对子地址加密码
+
+	//用地址密码加密数据
+	pbkdf2KeyAddr := crypto.Pbkdf2Key(newAddressPasswordB[:], this.Salt, this.Rounds)
+	subKeySec, err := crypto.EncryptCBCPbkdf2Key(priks, pbkdf2KeyAddr)
+	cpuk, err := crypto.EncryptCBCPbkdf2Key(puk, pbkdf2KeyAddr)
+
 	addrInfo := &AddressInfo{
 		Index:     index, //棘轮数
 		Addr:      addr,  //收款地址
-		Puk:       puk,   //公钥
+		puk:       puk,   //公钥
+		CPuk:      cpuk,
 		CheckHash: checkHash[:],
 		SubKey:    subKeySec,
-		Version:   version_4, //地址版本
+		//Version:   version_4, //地址版本
 	}
 	// fmt.Println("保存公钥", hex.EncodeToString(addrInfo.Puk), index)
 	// fmt.Println("保存PUK", hex.EncodeToString(puk))
 	this.Addrs = append(this.Addrs, addrInfo)
 	this.addrMap.Store(utils.Bytes2string(addr), addrInfo)
-	this.pukMap.Store(utils.Bytes2string(puk), addrInfo)
+	//this.pukMap.Store(utils.Bytes2string(puk), addrInfo)
 	if err = this.Save(); err != nil {
 		return nil, err
 	}
@@ -693,46 +773,46 @@ func (this *Keystore) GetNewAddr(password, newAddressPassword string) (crypto.Ad
 }
 
 /*
-	Decrypt
-	@Description: 使用钱包密码解密钱包种子，获得钱包私钥和链编码
-	@receiver this
-	@param pwdbs 钱包密码
-	@return ok 密码是否正确
-	@return key 生成私钥的随机数
-	@return code 链编码
-	@return err
+Decrypt
+@Description: 使用钱包密码解密钱包种子，获得钱包私钥和链编码
+@receiver this
+@param pwdbs 钱包密码
+@return ok 密码是否正确
+@return key 生成私钥的随机数
+@return code 链编码
+@return err
 */
-func (this *Keystore) Decrypt(pwdbs [32]byte) (bool, []byte, []byte, error) {
-	//密码取hash
+func (this *Keystore) Decrypt(pwdbs [32]byte) (bool, []byte, []byte, []byte, error) {
 
 	//先用密码解密种子
-	seedBs, err := crypto.DecryptCBC(this.Seed, pwdbs[:], Salt)
+	pbkdf2Key := crypto.Pbkdf2Key(pwdbs[:], this.Salt, this.Rounds)
+	seedBs, err := crypto.DecryptCBCPbkdf2Key(this.Seed, pbkdf2Key)
 	if err != nil {
-		return false, nil, nil, err
+		return false, nil, nil, nil, err
 	}
 	//判断密码是否正确
 	chackHash := sha256.Sum256(seedBs)
 	if !bytes.Equal(chackHash[:], this.CheckHash) {
-		return false, nil, nil, ERROR_wallet_password_fail
+		return false, nil, nil, nil, ERROR_wallet_password_fail
 	}
 
 	key, code, err := crypto.BuildKeyBySeed(&seedBs, Salt)
 	if err != nil {
-		return false, nil, nil, err
+		return false, nil, nil, nil, err
 	}
 
-	return true, *key, *code, nil
+	return true, *key, *code, pbkdf2Key, nil
 }
 
 /*
-	GetNewAddrByName
-	@Description: 获取一个新的地址,并且给新地址一个昵称
-	@receiver this
-	@param name 昵称
-	@param password 钱包密码
-	@param newAddressPassword 新地址密码
-	@return crypto.AddressCoin
-	@return error
+GetNewAddrByName
+@Description: 获取一个新的地址,并且给新地址一个昵称
+@receiver this
+@param name 昵称
+@param password 钱包密码
+@param newAddressPassword 新地址密码
+@return crypto.AddressCoin
+@return error
 */
 func (this *Keystore) GetNewAddrByName(name, password, newAddressPassword string) (crypto.AddressCoin, error) {
 	addr, err := this.GetNewAddr(password, newAddressPassword)
@@ -748,20 +828,20 @@ func (this *Keystore) GetNewAddrByName(name, password, newAddressPassword string
 }
 
 /*
-	UpdateAddrName
-	@Description: 修改地址的昵称
-	@receiver this
-	@param name 新昵称
-	@param password 地址密码
-	@param addr 地址
-	@return error
+UpdateAddrName
+@Description: 修改地址的昵称
+@receiver this
+@param name 新昵称
+@param password 地址密码
+@param addr 地址
+@return error
 */
 func (this *Keystore) UpdateAddrName(name, password string, addr crypto.AddressCoin) error {
 	pwd := sha256.Sum256([]byte(password))
 
 	this.lock.Lock()
 	defer this.lock.Unlock()
-	ok, _, err := this.AddrDecrypt(addr, pwd)
+	ok, _, _, err := this.AddrDecrypt(addr, pwd)
 	if err != nil {
 		return err
 	}
@@ -778,22 +858,22 @@ func (this *Keystore) UpdateAddrName(name, password string, addr crypto.AddressC
 }
 
 /*
-	GetKeyByAddr
-	@Description: 通过地址获取密钥对
-	@receiver this
-	@param addr 地址
-	@param password 地址密码
-	@return rand
-	@return prk 地址私钥
-	@return puk 地址公钥
-	@return err
+GetKeyByAddr
+@Description: 通过地址获取密钥对
+@receiver this
+@param addr 地址
+@param password 地址密码
+@return rand
+@return prk 地址私钥
+@return puk 地址公钥
+@return err
 */
 func (this *Keystore) GetKeyByAddr(addr crypto.AddressCoin, password string) (rand []byte, prk ed25519.PrivateKey, puk ed25519.PublicKey, err error) {
 	pwd := sha256.Sum256([]byte(password))
 	this.lock.RLock()
 	defer this.lock.RUnlock()
 
-	ok, subKeyBs, err := this.AddrDecrypt(addr, pwd) //
+	ok, subKeyBs, pbkdf2Key, err := this.AddrDecrypt(addr, pwd) //
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -804,73 +884,79 @@ func (this *Keystore) GetKeyByAddr(addr crypto.AddressCoin, password string) (ra
 	}
 	addrInfo := v.(*AddressInfo)
 
+	if addrInfo.puk == nil || len(addrInfo.puk) == 0 {
+		addrInfo.puk, err = crypto.DecryptCBCPbkdf2Key(addrInfo.CPuk, pbkdf2Key)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
+
 	prk = subKeyBs //私钥
-	puk = addrInfo.Puk
+	puk = addrInfo.puk
 	return
 
 }
 
 /*
-	AddrDecrypt
-	@Description: 使用钱包地址密码解密钱包地址子秘钥
-	@receiver this
-	@param addr 地址
-	@param pwdbs 地址密码
-	@return ok 密码是否正确
-	@return subKeyBs 子密私钥
-	@return err
+AddrDecrypt
+@Description: 使用钱包地址密码解密钱包地址子秘钥
+@receiver this
+@param addr 地址
+@param pwdbs 地址密码
+@return ok 密码是否正确
+@return subKeyBs 子密私钥
+@return err
 */
-func (this *Keystore) AddrDecrypt(addr crypto.AddressCoin, pwdbs [32]byte) (bool, []byte, error) {
+func (this *Keystore) AddrDecrypt(addr crypto.AddressCoin, pwdbs [32]byte) (bool, []byte, []byte, error) {
 
 	v, ok := this.addrMap.Load(utils.Bytes2string(addr))
 	if !ok {
-		return false, nil, ERROR_get_address_info_errer
+		return false, nil, nil, ERROR_get_address_info_errer
 	}
 	addrInfo := v.(*AddressInfo)
 
-	//先用密码解密种子
-	subKeyBs, err := crypto.DecryptCBC(addrInfo.SubKey, pwdbs[:], Salt)
+	//先用密码解密子秘钥
+
+	pbkdf2Key := crypto.Pbkdf2Key(pwdbs[:], this.Salt, this.Rounds)
+	subKeyBs, err := crypto.DecryptCBCPbkdf2Key(addrInfo.SubKey, pbkdf2Key)
 	if err != nil {
-		return false, nil, err
+		return false, nil, nil, err
 	}
 
 	//判断密码是否正确
 	chackHash := sha256.Sum256(subKeyBs)
 	if !bytes.Equal(chackHash[:], addrInfo.CheckHash) {
-		return false, nil, ERROR_wallet_address_password_fail
+		return false, nil, nil, ERROR_wallet_address_password_fail
 	}
 
-	/*key, code, err := crypto.BuildKeyBySeed(&subKeyBs, Salt)
-	if err != nil {
-		return false, nil, err
-	}*/
-
-	return true, subKeyBs, nil
+	return true, subKeyBs, pbkdf2Key, nil
 
 }
 
 /*
-	GetKeyByPuk
-	@Description: 通过公钥获取密钥
-	@receiver this
-	@param puk 地址公钥
-	@param password 地址密码
-	@return rand
-	@return prk 地址私钥
-	@return err
+GetKeyByPuk
+@Description: 通过公钥获取密钥
+@receiver this
+@param puk 地址公钥
+@param password 地址密码
+@return rand
+@return prk 地址私钥
+@return err
 */
 func (this *Keystore) GetKeyByPuk(puk []byte, password string) (rand []byte, prk ed25519.PrivateKey, err error) {
 	pwd := sha256.Sum256([]byte(password))
 	this.lock.RLock()
 	defer this.lock.RUnlock()
 
-	v, ok := this.pukMap.Load(utils.Bytes2string(puk))
+	addr := crypto.BuildAddr(this.AddrPre, puk) //公钥生成地址
+
+	v, ok := this.addrMap.Load(utils.Bytes2string(addr))
 	if !ok {
 		return nil, nil, ERROR_get_address_info_errer
 	}
 	addrInfo := v.(*AddressInfo)
 
-	ok, subKeyBs, err := this.AddrDecrypt(addrInfo.Addr, pwd)
+	_, subKeyBs, _, err := this.AddrDecrypt(addrInfo.Addr, pwd)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -882,14 +968,26 @@ func (this *Keystore) GetKeyByPuk(puk []byte, password string) (rand []byte, prk
 /*
 通过地址获取公钥
 */
-func (this *Keystore) GetPukByAddr(addr crypto.AddressCoin) (puk ed25519.PublicKey, ok bool) {
+func (this *Keystore) GetPukByAddr(addr crypto.AddressCoin, password string) (puk ed25519.PublicKey, ok bool) {
+	pwd := sha256.Sum256([]byte(password))
 	this.lock.RLock()
 	defer this.lock.RUnlock()
 
+	_, _, pbkdf2Key, err := this.AddrDecrypt(addr, pwd) //
+	if err != nil {
+		return nil, false
+	}
 	var v interface{}
 	v, ok = this.addrMap.Load(utils.Bytes2string(addr))
 	if ok {
-		puk = v.(*AddressInfo).Puk
+		addrInfo := v.(*AddressInfo)
+		if addrInfo.puk == nil || len(addrInfo.puk) == 0 {
+			addrInfo.puk, err = crypto.DecryptCBCPbkdf2Key(addrInfo.CPuk, pbkdf2Key)
+			if err != nil {
+				return nil, false
+			}
+		}
+		puk = addrInfo.puk
 	}
 	return
 }
@@ -914,7 +1012,10 @@ func (this *Keystore) FindPuk(puk []byte) (addrInfo AddressInfo, ok bool) {
 	this.lock.RLock()
 	defer this.lock.RUnlock()
 	var v interface{}
-	v, ok = this.pukMap.Load(utils.Bytes2string(puk))
+
+	addr := crypto.BuildAddr(this.AddrPre, puk) //公钥生成地址
+
+	v, ok = this.addrMap.Load(utils.Bytes2string(addr))
 	if !ok {
 		return
 	}
@@ -931,18 +1032,21 @@ func (this *Keystore) UpdatePwd(oldpwd, newpwd string) (ok bool, err error) {
 	this.lock.RLock()
 	defer this.lock.RUnlock()
 
-	ok, _, _, err = this.Decrypt(oldHash)
+	var pbkdf2Key []byte
+	ok, _, _, pbkdf2Key, err = this.Decrypt(oldHash)
 	if err != nil {
 		return false, err
 	}
 
 	//先用密码解密种子
-	seedBs, err := crypto.DecryptCBC(this.Seed, oldHash[:], Salt)
+	seedBs, err := crypto.DecryptCBCPbkdf2Key(this.Seed, pbkdf2Key)
 	if err != nil {
 		return false, err
 	}
 
-	seedSec, err := crypto.EncryptCBC(seedBs, newHash[:], Salt)
+	//先用密码解密种子
+	pbkdf2Key = crypto.Pbkdf2Key(newHash[:], this.Salt, this.Rounds)
+	seedSec, err := crypto.EncryptCBCPbkdf2Key(seedBs, pbkdf2Key)
 	if err != nil {
 		return false, err
 	}
@@ -974,18 +1078,33 @@ func (this *Keystore) UpdateAddrPwd(addr, oldpwd, newpwd string) (ok bool, err e
 	}
 
 	//旧密码解密子秘钥
-	ok, subKeyBs, err := this.AddrDecrypt(addrCoin, oldHash)
+	ok, subKeyBs, pbkdf2Key, err := this.AddrDecrypt(addrCoin, oldHash)
 	if err != nil {
 		return false, err
 	}
 
+	//用旧密码解密公钥
+	if addrInfo.puk == nil || len(addrInfo.puk) == 0 {
+		addrInfo.puk, err = crypto.DecryptCBCPbkdf2Key(addrInfo.CPuk, pbkdf2Key)
+		if err != nil {
+			return false, err
+		}
+	}
+
 	//用新密码加密子秘钥
-	subKeySec, err := crypto.EncryptCBC(subKeyBs, newHash[:], Salt)
+	pbkdf2Key = crypto.Pbkdf2Key(newHash[:], this.Salt, this.Rounds)
+	subKeySec, err := crypto.EncryptCBCPbkdf2Key(subKeyBs, pbkdf2Key)
+	if err != nil {
+		return false, err
+	}
+
+	cpuk, err := crypto.EncryptCBCPbkdf2Key(addrInfo.puk, pbkdf2Key)
 	if err != nil {
 		return false, err
 	}
 
 	addrInfo.SubKey = subKeySec
+	addrInfo.CPuk = cpuk
 	checkHashArr := sha256.Sum256(subKeyBs)
 	addrInfo.CheckHash = checkHashArr[:]
 	err = this.Save()
@@ -1005,8 +1124,9 @@ func (this *Keystore) UpdateNetAddrPwd(oldpwd, newpwd string) (ok bool, err erro
 		return false, ERROR_get_address_info_errer
 	}
 
+	pbkdf2Key := crypto.Pbkdf2Key(oldHash[:], this.Salt, this.Rounds)
 	//先用旧密码解密种子
-	subKeyBs, err := crypto.DecryptCBC(this.NetAddr.SubKey, oldHash[:], Salt)
+	subKeyBs, err := crypto.DecryptCBCPbkdf2Key(this.NetAddr.SubKey, pbkdf2Key)
 	if err != nil {
 		return false, err
 	}
@@ -1017,8 +1137,9 @@ func (this *Keystore) UpdateNetAddrPwd(oldpwd, newpwd string) (ok bool, err erro
 		return false, ERROR_netAddr_password_fail
 	}
 
+	pbkdf2Key = crypto.Pbkdf2Key(newHash[:], this.Salt, this.Rounds)
 	//用新密码加密子秘钥
-	subKeySec, err := crypto.EncryptCBC(subKeyBs, newHash[:], Salt)
+	subKeySec, err := crypto.EncryptCBCPbkdf2Key(subKeyBs, pbkdf2Key)
 	if err != nil {
 		return false, err
 	}
@@ -1027,7 +1148,9 @@ func (this *Keystore) UpdateNetAddrPwd(oldpwd, newpwd string) (ok bool, err erro
 	if err != nil {
 		return false, err
 	}
-	prkPwd, err := crypto.EncryptCBC([]byte(newpwd), prk.Seed(), Salt)
+
+	pbkdf2KeyPrk := crypto.Pbkdf2Key(prk.Seed(), this.Salt, this.Rounds)
+	prkPwd, err := crypto.EncryptCBCPbkdf2Key([]byte(newpwd), pbkdf2KeyPrk)
 	if err != nil {
 		return false, err
 	}
@@ -1041,14 +1164,14 @@ func (this *Keystore) UpdateNetAddrPwd(oldpwd, newpwd string) (ok bool, err erro
 }
 
 /*
-	UpdateDHKeyPwd
-	@Description: 修改DHKey密碼
-	@receiver this
-	@param index
-	@param oldpwd 旧密码
-	@param newpwd 新密码
-	@return ok
-	@return err
+UpdateDHKeyPwd
+@Description: 修改DHKey密碼
+@receiver this
+@param index
+@param oldpwd 旧密码
+@param newpwd 新密码
+@return ok
+@return err
 */
 func (this *Keystore) UpdateDHKeyPwd(oldpwd, newpwd string) (ok bool, err error) {
 	oldHash := sha256.Sum256([]byte(oldpwd))
@@ -1067,8 +1190,9 @@ func (this *Keystore) UpdateDHKeyPwd(oldpwd, newpwd string) (ok bool, err error)
 		return false, ERROR_get_dhkey_errer
 	}
 
+	pbkdf2Key := crypto.Pbkdf2Key(oldHash[:], this.Salt, this.Rounds)
 	//先用旧密码解密种子
-	subKeyBs, err := crypto.DecryptCBC(dhkey.SubKey, oldHash[:], Salt)
+	subKeyBs, err := crypto.DecryptCBCPbkdf2Key(dhkey.SubKey, pbkdf2Key)
 	if err != nil {
 		return false, err
 	}
@@ -1079,8 +1203,9 @@ func (this *Keystore) UpdateDHKeyPwd(oldpwd, newpwd string) (ok bool, err error)
 		return false, ERROR_DHKey_password_fail
 	}
 
+	pbkdf2Key = crypto.Pbkdf2Key(newHash[:], this.Salt, this.Rounds)
 	//用新密码加密子秘钥
-	subKeySec, err := crypto.EncryptCBC(subKeyBs, newHash[:], Salt)
+	subKeySec, err := crypto.EncryptCBCPbkdf2Key(subKeyBs, pbkdf2Key)
 	if err != nil {
 		return false, err
 	}
@@ -1114,17 +1239,18 @@ func (this *Keystore) SetLang(lan string) {
 }
 
 /*
-	ExportMnemonic
-	@Description: 导出助记词
-	@receiver this
-	@param pwd 钱包密码
-	@return string 助词记
-	@return error
+ExportMnemonic
+@Description: 导出助记词
+@receiver this
+@param pwd 钱包密码
+@return string 助词记
+@return error
 */
 func (this *Keystore) ExportMnemonic(pwd string) (string, error) {
 	pwdHash := sha256.Sum256([]byte(pwd))
 	//先用密码解密种子
-	seedBs, err := crypto.DecryptCBC(this.Seed, pwdHash[:], Salt)
+	pbkdf2Key := crypto.Pbkdf2Key(pwdHash[:], this.Salt, this.Rounds)
+	seedBs, err := crypto.DecryptCBCPbkdf2Key(this.Seed, pbkdf2Key)
 	if err != nil {
 		// fmt.Println("1111111111")
 		return "", err
@@ -1145,14 +1271,14 @@ func (this *Keystore) ExportMnemonic(pwd string) (string, error) {
 }
 
 /*
-	ImportMnemonic
-	@Description: 导入助记词
-	@receiver this
-	@param words 助记词
-	@param pwd 钱包密码
-	@param firstCoinAddressPassword 首个钱包地址的密码
-	@param firstAddressPassword 首个网络地址和DHkey的密码
-	@return error
+ImportMnemonic
+@Description: 导入助记词
+@receiver this
+@param words 助记词
+@param pwd 钱包密码
+@param firstCoinAddressPassword 首个钱包地址的密码
+@param firstAddressPassword 首个网络地址和DHkey的密码
+@return error
 */
 func (this *Keystore) ImportMnemonic(words, pwd, firstCoinAddressPassword, netAddressAndDHkeyPassword string) error {
 	bip39.SetWordList(this.MnemonicLang)
@@ -1165,15 +1291,15 @@ func (this *Keystore) ImportMnemonic(words, pwd, firstCoinAddressPassword, netAd
 }
 
 /*
- 	ImportMnemonicCreateMoreCoinAddr
- 	@Description: 导入助记词生成多个钱包地址
- 	@receiver this
- 	@param words 助记词
-	@param pwd 钱包密码
-	@param firstCoinAddressPassword 首个钱包地址的密码
-	@param firstAddressPassword 首个网络地址和DHkey的密码
- 	@param coinAddrNum 创建多少个钱包地址
- 	@return error
+	 	ImportMnemonicCreateMoreCoinAddr
+	 	@Description: 导入助记词生成多个钱包地址
+	 	@receiver this
+	 	@param words 助记词
+		@param pwd 钱包密码
+		@param firstCoinAddressPassword 首个钱包地址的密码
+		@param firstAddressPassword 首个网络地址和DHkey的密码
+	 	@param coinAddrNum 创建多少个钱包地址
+	 	@return error
 */
 func (this *Keystore) ImportMnemonicCreateMoreCoinAddr(words, pwd, firstCoinAddressPassword, netAddressAndDHkeyPassword string, coinAddrNum int) error {
 	bip39.SetWordList(this.MnemonicLang)
@@ -1186,12 +1312,12 @@ func (this *Keystore) ImportMnemonicCreateMoreCoinAddr(words, pwd, firstCoinAddr
 }
 
 /*
-	getNetAddrTmp
-	@Description: 根据NetAddr私钥推导公钥
-	@receiver this
-	@return ed25519.PrivateKey
-	@return ed25519.PublicKey
-	@return error
+getNetAddrTmp
+@Description: 根据NetAddr私钥推导公钥
+@receiver this
+@return ed25519.PrivateKey
+@return ed25519.PublicKey
+@return error
 */
 func (this *Keystore) getNetAddrTmp() (ed25519.PrivateKey, ed25519.PublicKey, error) {
 	pub, ok := this.netAddrPrkTmp.Public().(ed25519.PublicKey)
@@ -1202,13 +1328,13 @@ func (this *Keystore) getNetAddrTmp() (ed25519.PrivateKey, ed25519.PublicKey, er
 }
 
 /*
-	GetNetAddrKeyByMnemonic
-	@Description: 根据助记词获取网络地址公私钥
-	@param words 助记词
-	@param mnemonicLang 助记词版本
-	@return prk
-	@return puk
-	@return err
+GetNetAddrKeyByMnemonic
+@Description: 根据助记词获取网络地址公私钥
+@param words 助记词
+@param mnemonicLang 助记词版本
+@return prk
+@return puk
+@return err
 */
 func GetNetAddrKeyByMnemonic(words string, mnemonicLang []string) (prk ed25519.PrivateKey, puk ed25519.PublicKey, err error) {
 	bip39.SetWordList(mnemonicLang)
